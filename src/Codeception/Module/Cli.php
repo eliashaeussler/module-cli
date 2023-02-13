@@ -32,7 +32,8 @@ class Cli extends Module
 
     /**
      * Executes a shell command.
-     * Fails if exit code is > 0. You can disable this by passing `false` as second argument
+     * Fails if exit code is > 0. You can disable this by passing `false` as second argument.
+     * Additional user input can be passed as third argument (array values will be concatenated).
      *
      * ```php
      * <?php
@@ -40,9 +41,12 @@ class Cli extends Module
      *
      * // do not fail test when command fails
      * $I->runShellCommand('phpunit', false);
+     *
+     * // provide command input
+     * $I->runShellCommand('some-interactive-command', true, ['Hello', 'World']);
      * ```
      */
-    public function runShellCommand(string $command, bool $failNonZero = true): void
+    public function runShellCommand(string $command, bool $failNonZero = true, array $input = []): void
     {
         $data = [];
         /**
@@ -52,7 +56,11 @@ class Cli extends Module
         if (\function_exists('putenv')) {
             @putenv('SHELL_VERBOSITY');
         }
-        exec("{$command}", $data, $resultCode);
+        if ([] === $input) {
+            exec("{$command}", $data, $resultCode);
+        } else {
+            [$data, $resultCode] = $this->executeCommandWithUserInput($command, $input);
+        }
         $this->result = $resultCode;
         $this->output = implode("\n", $data);
         if ($this->output === null) {
@@ -120,5 +128,46 @@ class Cli extends Module
     public function seeResultCodeIsNot(int $code): void
     {
         $this->assertNotEquals($this->result, $code, "result code is {$code}");
+    }
+
+    /**
+     * @param array<string> $input
+     * @return array{string, int}
+     */
+    private function executeCommandWithUserInput(string $command, array $input): array
+    {
+        $inputStream = \fopen('php://temp', 'r+');
+
+        if (!\is_resource($inputStream)) {
+            Assert::fail('Unable to create input stream for command');
+        }
+
+        $process = \proc_open(
+            "{$command}",
+            [
+                0 => $inputStream, // stdin,
+                1 => ['pipe', 'w'], // stdout
+                2 => null,
+            ],
+            $pipes
+        );
+
+        if (!\is_resource($process)) {
+            Assert::fail('Unable to create process for command');
+        }
+
+        // Write user input
+        foreach ($input as $line) {
+            \fwrite($pipes[0], $line."\n");
+        }
+        \fclose($pipes[0]);
+
+        // Get command data
+        $data = \stream_get_contents($pipes[1]);
+        \fclose($pipes[1]);
+
+        $resultCode = \proc_close($process);
+
+        return [$data, $resultCode];
     }
 }
